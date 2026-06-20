@@ -71,6 +71,14 @@ type ChartBucket = {
   value: number;
 };
 
+type ProgressCellConfig = {
+  cellCount: number;
+  exactUnitsPerCell: number;
+  filledCells: number;
+  wholeCells: number;
+  partialFill: number;
+};
+
 const STORAGE_KEY = "life-os-goals-v1";
 const categories: Category[] = ["学习", "运动", "阅读", "生活", "工作"];
 const commonUnits = ["小时", "次", "页", "公里", "天", "篇"];
@@ -432,6 +440,21 @@ function getPrimaryStatValue(metric: MetricFilter, goals: GoalSummary[], entries
   return entries.reduce((sum, entry) => sum + entry.amount, 0);
 }
 
+function getProgressCellConfig(current: number, target: number): ProgressCellConfig {
+  const safeTarget = Math.max(target, 1);
+  const cellCount = safeTarget <= 100 ? Math.max(1, Math.round(safeTarget)) : 100;
+  const exactUnitsPerCell = safeTarget <= 100 ? 1 : safeTarget / 100;
+  const filledCells = Math.min((Math.max(current, 0) / safeTarget) * cellCount, cellCount);
+
+  return {
+    cellCount,
+    exactUnitsPerCell,
+    filledCells,
+    wholeCells: Math.floor(filledCells),
+    partialFill: filledCells - Math.floor(filledCells),
+  };
+}
+
 function chipClass(active: boolean) {
   return [
     "rounded-full border px-3 py-2 text-[13px] font-semibold transition",
@@ -767,10 +790,10 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.96),_rgba(245,241,255,0.95)_36%,_rgba(249,249,252,0.98)_100%)] px-3 py-4 text-slate-900 sm:px-6 sm:py-8">
+    <div className="min-h-[100dvh] overflow-x-hidden bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.96),_rgba(245,241,255,0.95)_36%,_rgba(249,249,252,0.98)_100%)] px-0 py-0 text-slate-900 sm:px-6 sm:py-8">
       <input ref={importInputRef} type="file" accept="application/json" className="hidden" onChange={handleImportChange} />
 
-      <div className="mx-auto w-full max-w-[430px] overflow-hidden rounded-[36px] border border-white/80 bg-white/72 shadow-[0_30px_100px_rgba(160,160,176,0.16)] backdrop-blur-xl">
+      <div className="mx-auto min-h-[100dvh] w-full max-w-[430px] overflow-hidden bg-white/72 shadow-[0_30px_100px_rgba(160,160,176,0.16)] backdrop-blur-xl sm:min-h-[calc(100dvh-4rem)] sm:rounded-[36px] sm:border sm:border-white/80">
         {screen === "home" && (
           <HomeScreen
             goals={goalSummaries}
@@ -1070,8 +1093,7 @@ function DetailScreen({
   }
 
   const theme = getTheme(goal.themeKey);
-  const whole = Math.floor(goal.current);
-  const partial = goal.current - whole;
+  const progressCells = getProgressCellConfig(goal.current, goal.target);
 
   return (
     <div className="pb-10 pt-4">
@@ -1114,16 +1136,16 @@ function DetailScreen({
 
           <p className="mt-3 text-[13px] leading-6 text-slate-500">{goal.description || "每一次记录，都是在给未来的自己留下真实证据。"}</p>
 
-          <div className="mt-5 grid grid-cols-10 gap-1.5">
-            {Array.from({ length: 100 }).map((_, index) => {
-              const filled = index < whole;
-              const partialCell = index === whole && partial > 0;
+          <div className="mt-5 grid grid-cols-10 gap-1.5 overflow-hidden">
+            {Array.from({ length: progressCells.cellCount }).map((_, index) => {
+              const filled = index < progressCells.wholeCells;
+              const partialCell = index === progressCells.wholeCells && progressCells.partialFill > 0;
               return (
                 <div key={index} className="relative aspect-square overflow-hidden rounded-[6px] bg-[#efedf4]">
                   {(filled || partialCell) && (
                     <div
                       className={`absolute inset-y-0 left-0 rounded-[6px] bg-gradient-to-b ${theme.accent}`}
-                      style={{ width: filled ? "100%" : `${partial * 100}%` }}
+                      style={{ width: filled ? "100%" : `${progressCells.partialFill * 100}%`, opacity: filled ? 1 : 0.82 }}
                     />
                   )}
                 </div>
@@ -1131,12 +1153,21 @@ function DetailScreen({
             })}
           </div>
 
-          <div className="mt-4 flex items-center justify-between text-[13px] text-slate-500">
-            <span className="inline-flex items-center gap-2">
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-slate-500">
+            <span className="rounded-full bg-slate-50 px-3 py-1.5">
+              {goal.target <= 100
+                ? `每格代表 1 ${goal.unit}`
+                : `每格约代表 ${formatNumber(progressCells.exactUnitsPerCell)} ${goal.unit}`}
+            </span>
+            <span className="rounded-full bg-slate-50 px-3 py-1.5">共 {progressCells.cellCount} 格</span>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-[13px] text-slate-500">
+            <span className="inline-flex min-w-0 items-center gap-2 break-words">
               <span className={`h-3 w-3 rounded bg-gradient-to-r ${theme.accent}`} />
               已完成 {formatNumber(goal.current)}
             </span>
-            <span className="inline-flex items-center gap-2">
+            <span className="inline-flex min-w-0 items-center gap-2 break-words">
               <span className="h-3 w-3 rounded bg-slate-200" />
               剩余 {formatNumber(Math.max(goal.target - goal.current, 0))}
             </span>

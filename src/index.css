@@ -15,6 +15,7 @@
 html,
 body,
 #root {
+  width: 100%;
   min-height: 100%;
   overflow-x: hidden;
 }
@@ -26,6 +27,7 @@ html {
 
 body {
   margin: 0;
+  min-height: 100dvh;
   color: #0f172a;
   font-family:
     Manrope,
@@ -59,4 +61,5 @@ canvas {
 
 #root {
   isolation: isolate;
+  min-height: 100dvh;
 }
