@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 
-type Screen = "home" | "detail" | "create" | "stats" | "complete";
+type Screen = "home" | "detail" | "create" | "stats" | "profile" | "complete";
 type ThemeKey = "violet" | "green" | "orange" | "blue" | "rose";
+type Category = "学习" | "运动" | "阅读" | "生活" | "工作";
+type RangeFilter = "today" | "7d" | "30d" | "all";
+type MetricFilter = "invested" | "records" | "completed" | "average";
+type RankSort = "percent" | "current" | "records" | "createdAt";
+type GoalFilter = "all" | string;
 
 type Goal = {
   id: string;
@@ -12,6 +17,7 @@ type Goal = {
   dueDate: string;
   themeKey: ThemeKey;
   icon: string;
+  category: Category;
   createdAt: string;
 };
 
@@ -31,6 +37,7 @@ type GoalDraft = {
   dueDate: string;
   themeKey: ThemeKey;
   icon: string;
+  category: Category;
 };
 
 type GoalSummary = Goal & {
@@ -40,6 +47,15 @@ type GoalSummary = Goal & {
   recentLabel: string;
   completionDate: string | null;
   countdownLabel: string | null;
+  recordCount: number;
+};
+
+type PersistedState = {
+  goals: Goal[];
+  entries: Entry[];
+  selectedGoalId: string | null;
+  appInitialized: boolean;
+  hasClearedData: boolean;
 };
 
 type ThemePreset = {
@@ -50,9 +66,33 @@ type ThemePreset = {
   cardGlow: string;
 };
 
+type ChartBucket = {
+  label: string;
+  value: number;
+};
+
 const STORAGE_KEY = "life-os-goals-v1";
+const categories: Category[] = ["学习", "运动", "阅读", "生活", "工作"];
 const commonUnits = ["小时", "次", "页", "公里", "天", "篇"];
-const presetIcons = ["芽", "语", "动", "读", "写", "跑"];
+const presetIcons = ["学", "练", "读", "生", "工", "跑", "写", "健"];
+const rangeOptions: { key: RangeFilter; label: string }[] = [
+  { key: "today", label: "当日" },
+  { key: "7d", label: "近7天" },
+  { key: "30d", label: "近30天" },
+  { key: "all", label: "全部" },
+];
+const metricOptions: { key: MetricFilter; label: string }[] = [
+  { key: "invested", label: "累计投入" },
+  { key: "records", label: "记录次数" },
+  { key: "completed", label: "完成目标数" },
+  { key: "average", label: "平均每次投入" },
+];
+const rankOptions: { key: RankSort; label: string }[] = [
+  { key: "percent", label: "按完成度" },
+  { key: "current", label: "按累计投入" },
+  { key: "records", label: "按记录次数" },
+  { key: "createdAt", label: "按创建时间" },
+];
 
 const themePresets: ThemePreset[] = [
   {
@@ -99,106 +139,101 @@ const initialGoalDraft: GoalDraft = {
   description: "",
   dueDate: "",
   themeKey: "violet",
-  icon: "芽",
+  icon: "学",
+  category: "学习",
 };
 
 function createId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function isoAt(dayOffset: number, hour: number, minute: number) {
-  const date = new Date();
-  date.setDate(date.getDate() + dayOffset);
-  date.setHours(hour, minute, 0, 0);
-  return date.toISOString();
+function startOfDay(date: Date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
 }
 
-const seedGoals: Goal[] = [
-  {
-    id: "goal-english",
-    title: "英语口语输出训练",
-    unit: "小时",
-    target: 100,
-    description: "每天积累一点输出，重点是敢说、持续说。",
-    dueDate: "",
-    themeKey: "violet",
-    icon: "语",
-    createdAt: isoAt(-30, 9, 0),
-  },
-  {
-    id: "goal-sport",
-    title: "运动恢复体力",
-    unit: "小时",
-    target: 60,
-    description: "保持稳定运动，让精力慢慢恢复起来。",
-    dueDate: isoAt(7, 23, 59).slice(0, 10),
-    themeKey: "green",
-    icon: "动",
-    createdAt: isoAt(-25, 10, 20),
-  },
-  {
-    id: "goal-reading",
-    title: "阅读输入积累",
-    unit: "小时",
-    target: 80,
-    description: "用高质量输入，带动表达和思考。",
-    dueDate: isoAt(16, 23, 59).slice(0, 10),
-    themeKey: "orange",
-    icon: "读",
-    createdAt: isoAt(-20, 20, 0),
-  },
-];
+function addDays(date: Date, amount: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + amount);
+  return next;
+}
 
-const seedEntries: Entry[] = [
-  { id: createId("entry"), goalId: "goal-english", amount: 1.5, note: "跟读和自由对话", createdAt: isoAt(-6, 18, 30) },
-  { id: createId("entry"), goalId: "goal-english", amount: 1, note: "AI 口语对话练习", createdAt: isoAt(-5, 20, 10) },
-  { id: createId("entry"), goalId: "goal-english", amount: 2, note: "复述一篇英文播客", createdAt: isoAt(-4, 7, 45) },
-  { id: createId("entry"), goalId: "goal-english", amount: 4, note: "情景口语练习", createdAt: isoAt(-3, 19, 50) },
-  { id: createId("entry"), goalId: "goal-english", amount: 24, note: "本周集中输出训练", createdAt: isoAt(-1, 21, 15) },
-  { id: createId("entry"), goalId: "goal-sport", amount: 12, note: "快走和舒展训练", createdAt: isoAt(-7, 20, 15) },
-  { id: createId("entry"), goalId: "goal-sport", amount: 18, note: "健身房力量训练", createdAt: isoAt(-4, 19, 20) },
-  { id: createId("entry"), goalId: "goal-sport", amount: 15, note: "慢跑和拉伸", createdAt: isoAt(-2, 8, 10) },
-  { id: createId("entry"), goalId: "goal-reading", amount: 5, note: "读完一本访谈集", createdAt: isoAt(-8, 21, 0) },
-  { id: createId("entry"), goalId: "goal-reading", amount: 3, note: "读论文并做笔记", createdAt: isoAt(-5, 22, 0) },
-  { id: createId("entry"), goalId: "goal-reading", amount: 4, note: "晨读一小时，晚间复盘三小时", createdAt: isoAt(-2, 6, 50) },
-];
+function inferCategory(title: string, themeKey?: ThemeKey): Category {
+  const text = title.toLowerCase();
+  if (text.includes("跑") || text.includes("练") || text.includes("运动") || themeKey === "green") return "运动";
+  if (text.includes("读") || text.includes("书") || text.includes("阅读") || themeKey === "orange") return "阅读";
+  if (text.includes("工作") || text.includes("项目") || text.includes("写") || themeKey === "blue") return "工作";
+  if (text.includes("生活") || text.includes("家") || text.includes("整理") || themeKey === "rose") return "生活";
+  return "学习";
+}
 
-function loadInitialState() {
-  if (typeof window === "undefined") {
-    return {
-      goals: seedGoals,
-      entries: seedEntries,
-      selectedGoalId: seedGoals[0]?.id ?? null,
-    };
-  }
+function normalizeGoal(input: Partial<Goal> & { id: string; title: string; createdAt: string }): Goal {
+  return {
+    id: input.id,
+    title: input.title.trim(),
+    unit: input.unit?.trim() || "小时",
+    target: Number.isFinite(Number(input.target)) && Number(input.target) > 0 ? Number(input.target) : 100,
+    description: input.description?.trim() || "",
+    dueDate: input.dueDate || "",
+    themeKey: input.themeKey ?? "violet",
+    icon: (input.icon?.trim() || "学").slice(0, 2),
+    category: input.category ?? inferCategory(input.title, input.themeKey),
+    createdAt: input.createdAt,
+  };
+}
 
+function normalizeEntry(input: Partial<Entry> & { id: string; goalId: string; createdAt: string }): Entry {
+  return {
+    id: input.id,
+    goalId: input.goalId,
+    amount: Number.isFinite(Number(input.amount)) ? Number(input.amount) : 0,
+    note: input.note?.trim() || "",
+    createdAt: input.createdAt,
+  };
+}
+
+function emptyState(): PersistedState {
+  return {
+    goals: [],
+    entries: [],
+    selectedGoalId: null,
+    appInitialized: true,
+    hasClearedData: false,
+  };
+}
+
+function loadInitialState(): PersistedState {
+  if (typeof window === "undefined") return emptyState();
   const raw = window.localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return {
-      goals: seedGoals,
-      entries: seedEntries,
-      selectedGoalId: seedGoals[0]?.id ?? null,
-    };
-  }
+  if (!raw) return emptyState();
 
   try {
-    const parsed = JSON.parse(raw) as {
-      goals?: Goal[];
-      entries?: Entry[];
-      selectedGoalId?: string | null;
-    };
+    const parsed = JSON.parse(raw) as Partial<PersistedState>;
+    const goals = Array.isArray(parsed.goals)
+      ? parsed.goals
+          .filter((goal): goal is Goal & { id: string; title: string; createdAt: string } => Boolean(goal?.id && goal?.title && goal?.createdAt))
+          .map(normalizeGoal)
+      : [];
+    const goalIdSet = new Set(goals.map((goal) => goal.id));
+    const entries = Array.isArray(parsed.entries)
+      ? parsed.entries
+          .filter((entry): entry is Entry & { id: string; goalId: string; createdAt: string } => Boolean(entry?.id && entry?.goalId && entry?.createdAt))
+          .map(normalizeEntry)
+          .filter((entry) => goalIdSet.has(entry.goalId))
+      : [];
+    const selectedGoalId =
+      parsed.selectedGoalId && goalIdSet.has(parsed.selectedGoalId) ? parsed.selectedGoalId : goals[0]?.id ?? null;
 
     return {
-      goals: parsed.goals?.length ? parsed.goals : seedGoals,
-      entries: parsed.entries ?? seedEntries,
-      selectedGoalId: parsed.selectedGoalId ?? parsed.goals?.[0]?.id ?? seedGoals[0]?.id ?? null,
+      goals,
+      entries,
+      selectedGoalId,
+      appInitialized: true,
+      hasClearedData: Boolean(parsed.hasClearedData),
     };
   } catch {
-    return {
-      goals: seedGoals,
-      entries: seedEntries,
-      selectedGoalId: seedGoals[0]?.id ?? null,
-    };
+    return emptyState();
   }
 }
 
@@ -208,7 +243,7 @@ function formatNumber(value: number) {
 
 function formatShortDate(value: string) {
   const date = new Date(value);
-  return `${date.getMonth() + 1}月${date.getDate()}日`;
+  return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
 function formatFullDate(value: string) {
@@ -217,15 +252,17 @@ function formatFullDate(value: string) {
 }
 
 function formatTime(value: string) {
-  const date = new Date(value);
-  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return new Date(value).toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
 function formatRelativeLabel(value: string) {
   const date = new Date(value);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const today = startOfDay(new Date()).getTime();
+  const target = startOfDay(date).getTime();
   const diff = Math.round((today - target) / 86400000);
 
   if (diff === 0) return `今天 ${formatTime(value)}`;
@@ -259,17 +296,147 @@ function getGoalCompletionDate(goal: Goal, entries: Entry[]) {
 
 function getCountdownLabel(dueDate: string) {
   if (!dueDate) return null;
-
   const now = new Date();
   const end = new Date(`${dueDate}T23:59:59`);
   const diff = end.getTime() - now.getTime();
-  const dayMs = 24 * 60 * 60 * 1000;
+  const dayMs = 86400000;
 
   if (diff < 0) return "已到期";
   if (diff < dayMs) return "今天截止";
+  return `还剩 ${Math.ceil(diff / dayMs)} 天`;
+}
 
-  const days = Math.ceil(diff / dayMs);
-  return `还剩 ${days} 天`;
+function buildGoalDraft(goal?: Goal | null): GoalDraft {
+  if (!goal) return initialGoalDraft;
+  return {
+    title: goal.title,
+    unit: goal.unit,
+    target: formatNumber(goal.target),
+    description: goal.description,
+    dueDate: goal.dueDate,
+    themeKey: goal.themeKey,
+    icon: goal.icon,
+    category: goal.category,
+  };
+}
+
+function getMetricLabel(metric: MetricFilter) {
+  switch (metric) {
+    case "records":
+      return "记录次数";
+    case "completed":
+      return "完成目标数";
+    case "average":
+      return "平均每次投入";
+    default:
+      return "累计投入";
+  }
+}
+
+function bucketValue(
+  metric: MetricFilter,
+  bucketStart: Date,
+  bucketEnd: Date,
+  entries: Entry[],
+  goals: GoalSummary[],
+) {
+  const bucketEntries = entries.filter((entry) => {
+    const time = new Date(entry.createdAt).getTime();
+    return time >= bucketStart.getTime() && time < bucketEnd.getTime();
+  });
+
+  if (metric === "records") return bucketEntries.length;
+  if (metric === "invested") return bucketEntries.reduce((sum, entry) => sum + entry.amount, 0);
+  if (metric === "average") {
+    if (!bucketEntries.length) return 0;
+    return bucketEntries.reduce((sum, entry) => sum + entry.amount, 0) / bucketEntries.length;
+  }
+
+  return goals.filter((goal) => {
+    if (!goal.completionDate) return false;
+    const time = new Date(goal.completionDate).getTime();
+    return time >= bucketStart.getTime() && time < bucketEnd.getTime();
+  }).length;
+}
+
+function buildChartBuckets(
+  range: RangeFilter,
+  metric: MetricFilter,
+  entries: Entry[],
+  goals: GoalSummary[],
+): ChartBucket[] {
+  const today = startOfDay(new Date());
+
+  if (range === "today") {
+    return [
+      {
+        label: "今天",
+        value: bucketValue(metric, today, addDays(today, 1), entries, goals),
+      },
+    ];
+  }
+
+  if (range === "7d") {
+    return Array.from({ length: 7 }).map((_, index) => {
+      const start = addDays(today, -(6 - index));
+      return {
+        label: `${start.getMonth() + 1}/${start.getDate()}`,
+        value: bucketValue(metric, start, addDays(start, 1), entries, goals),
+      };
+    });
+  }
+
+  if (range === "30d") {
+    return Array.from({ length: 6 }).map((_, index) => {
+      const start = addDays(today, -29 + index * 5);
+      return {
+        label: `${start.getMonth() + 1}/${start.getDate()}`,
+        value: bucketValue(metric, start, addDays(start, 5), entries, goals),
+      };
+    });
+  }
+
+  const times = [
+    ...entries.map((entry) => new Date(entry.createdAt).getTime()),
+    ...goals.map((goal) => new Date(goal.createdAt).getTime()),
+  ].filter((value) => Number.isFinite(value));
+
+  if (!times.length) return [{ label: "全部", value: 0 }];
+
+  const first = startOfDay(new Date(Math.min(...times)));
+  const totalMonths =
+    (today.getFullYear() - first.getFullYear()) * 12 + today.getMonth() - first.getMonth() + 1;
+  const groupSize = Math.max(1, Math.ceil(totalMonths / 6));
+  const buckets: ChartBucket[] = [];
+
+  for (let index = 0; index < 6; index += 1) {
+    const start = new Date(first.getFullYear(), first.getMonth() + index * groupSize, 1);
+    if (start > today && buckets.length > 0) break;
+    const end = new Date(first.getFullYear(), first.getMonth() + (index + 1) * groupSize, 1);
+    buckets.push({
+      label: groupSize === 1 ? `${start.getMonth() + 1}月` : `${start.getMonth() + 1}月起`,
+      value: bucketValue(metric, start, end, entries, goals),
+    });
+  }
+
+  return buckets;
+}
+
+function getPrimaryStatValue(metric: MetricFilter, goals: GoalSummary[], entries: Entry[]) {
+  if (metric === "records") return entries.length;
+  if (metric === "completed") return goals.filter((goal) => goal.completionDate).length;
+  if (metric === "average") {
+    if (!entries.length) return 0;
+    return entries.reduce((sum, entry) => sum + entry.amount, 0) / entries.length;
+  }
+  return entries.reduce((sum, entry) => sum + entry.amount, 0);
+}
+
+function chipClass(active: boolean) {
+  return [
+    "rounded-full border px-3 py-2 text-[13px] font-semibold transition",
+    active ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-600",
+  ].join(" ");
 }
 
 export default function App() {
@@ -282,38 +449,54 @@ export default function App() {
   const [recordAmount, setRecordAmount] = useState("1");
   const [recordNote, setRecordNote] = useState("");
   const [completionGoalId, setCompletionGoalId] = useState<string | null>(null);
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
+  const [homeMenuGoalId, setHomeMenuGoalId] = useState<string | null>(null);
+  const [detailMenuOpen, setDetailMenuOpen] = useState(false);
+  const [statsRange, setStatsRange] = useState<RangeFilter>("7d");
+  const [statsMetric, setStatsMetric] = useState<MetricFilter>("invested");
+  const [statsGoalFilter, setStatsGoalFilter] = useState<GoalFilter>("all");
+  const [rankSort, setRankSort] = useState<RankSort>("percent");
+  const [rankCategory, setRankCategory] = useState<Category | "全部">("全部");
+  const [hasClearedData, setHasClearedData] = useState(initialState.hasClearedData);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
     window.localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         goals,
         entries,
         selectedGoalId,
-      }),
+        appInitialized: true,
+        hasClearedData,
+      } satisfies PersistedState),
     );
-  }, [entries, goals, selectedGoalId]);
+  }, [entries, goals, hasClearedData, selectedGoalId]);
 
   useEffect(() => {
     if (!goals.length) {
       setSelectedGoalId(null);
+      if (screen === "detail") setScreen("home");
       return;
     }
 
     if (!selectedGoalId || !goals.some((goal) => goal.id === selectedGoalId)) {
       setSelectedGoalId(goals[0].id);
     }
-  }, [goals, selectedGoalId]);
+  }, [goals, screen, selectedGoalId]);
+
+  useEffect(() => {
+    setHomeMenuGoalId(null);
+    setDetailMenuOpen(false);
+  }, [screen, selectedGoalId]);
 
   const goalSummaries = useMemo<GoalSummary[]>(() => {
     return goals
       .map((goal) => {
-        const total = entries
-          .filter((entry) => entry.goalId === goal.id)
-          .reduce((sum, entry) => sum + entry.amount, 0);
-        const percent = goal.target > 0 ? Math.min((total / goal.target) * 100, 100) : 0;
         const goalEntries = getGoalEntries(entries, goal.id);
-        const completionDate = getGoalCompletionDate(goal, entries);
+        const total = goalEntries.reduce((sum, entry) => sum + entry.amount, 0);
+        const percent = goal.target > 0 ? Math.min((total / goal.target) * 100, 100) : 0;
 
         return {
           ...goal,
@@ -321,114 +504,106 @@ export default function App() {
           percent,
           percentLabel: `${formatNumber(percent)}%`,
           recentLabel: goalEntries[0] ? formatRelativeLabel(goalEntries[0].createdAt) : "还没有记录",
-          completionDate,
+          completionDate: getGoalCompletionDate(goal, entries),
           countdownLabel: getCountdownLabel(goal.dueDate),
+          recordCount: goalEntries.length,
         };
       })
-      .sort((a, b) => {
-        const completionDiff = Number(Boolean(a.completionDate)) - Number(Boolean(b.completionDate));
-        if (completionDiff !== 0) return completionDiff;
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      });
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [entries, goals]);
 
   const activeGoal = goalSummaries.find((goal) => goal.id === selectedGoalId) ?? goalSummaries[0] ?? null;
   const activeGoalEntries = activeGoal ? getGoalEntries(entries, activeGoal.id) : [];
 
-  const latestCompletedGoal = useMemo(() => {
-    const completed = goalSummaries
-      .filter((goal) => goal.completionDate)
-      .sort((a, b) => new Date(b.completionDate ?? 0).getTime() - new Date(a.completionDate ?? 0).getTime());
-    return completed[0] ?? null;
-  }, [goalSummaries]);
+  const filteredStatsEntries = useMemo(
+    () => (statsGoalFilter === "all" ? entries : entries.filter((entry) => entry.goalId === statsGoalFilter)),
+    [entries, statsGoalFilter],
+  );
+  const filteredStatsGoals = useMemo(
+    () => (statsGoalFilter === "all" ? goalSummaries : goalSummaries.filter((goal) => goal.id === statsGoalFilter)),
+    [goalSummaries, statsGoalFilter],
+  );
 
-  const celebrationGoal =
-    goalSummaries.find((goal) => goal.id === completionGoalId) ??
-    latestCompletedGoal ??
-    (activeGoal?.completionDate ? activeGoal : null);
+  const rangeStart = useMemo(() => {
+    const today = startOfDay(new Date());
+    if (statsRange === "today") return today;
+    if (statsRange === "7d") return addDays(today, -6);
+    if (statsRange === "30d") return addDays(today, -29);
+    return null;
+  }, [statsRange]);
 
-  const stats = useMemo(() => {
-    const totalGoals = goalSummaries.length;
-    const completedGoals = goalSummaries.filter((goal) => goal.current >= goal.target).length;
-    const totalInvested = entries.reduce((sum, entry) => sum + entry.amount, 0);
+  const periodEntries = useMemo(() => {
+    if (!rangeStart) return filteredStatsEntries;
+    return filteredStatsEntries.filter((entry) => new Date(entry.createdAt).getTime() >= rangeStart.getTime());
+  }, [filteredStatsEntries, rangeStart]);
 
-    const trendDays = Array.from({ length: 7 }).map((_, index) => {
-      const date = new Date();
-      date.setHours(0, 0, 0, 0);
-      date.setDate(date.getDate() - (6 - index));
-      const nextDate = new Date(date);
-      nextDate.setDate(nextDate.getDate() + 1);
-
-      const value = entries
-        .filter((entry) => {
-          const time = new Date(entry.createdAt).getTime();
-          return time >= date.getTime() && time < nextDate.getTime();
-        })
-        .reduce((sum, entry) => sum + entry.amount, 0);
-
-      return {
-        label: `${date.getMonth() + 1}/${date.getDate()}`,
-        value,
-      };
+  const periodGoals = useMemo(() => {
+    if (statsMetric !== "completed") return filteredStatsGoals;
+    if (!rangeStart) return filteredStatsGoals;
+    return filteredStatsGoals.filter((goal) => {
+      if (!goal.completionDate) return false;
+      return new Date(goal.completionDate).getTime() >= rangeStart.getTime();
     });
+  }, [filteredStatsGoals, rangeStart, statsMetric]);
 
-    return {
-      totalGoals,
-      completedGoals,
-      totalInvested,
-      trendDays,
-    };
-  }, [entries, goalSummaries]);
-
+  const chartBuckets = useMemo(
+    () => buildChartBuckets(statsRange, statsMetric, periodEntries, filteredStatsGoals),
+    [filteredStatsGoals, periodEntries, statsMetric, statsRange],
+  );
+  const chartMax = Math.max(...chartBuckets.map((bucket) => bucket.value), 1);
   const trendPoints = useMemo(() => {
     const width = 280;
     const height = 120;
-    const max = Math.max(...stats.trendDays.map((item) => item.value), 1);
-
-    return stats.trendDays
-      .map((item, index) => {
-        const x = (index / Math.max(stats.trendDays.length - 1, 1)) * width;
-        const y = height - (item.value / max) * height;
+    return chartBuckets
+      .map((bucket, index) => {
+        const x = (index / Math.max(chartBuckets.length - 1, 1)) * width;
+        const y = height - (bucket.value / chartMax) * height;
         return `${x},${y}`;
       })
       .join(" ");
-  }, [stats.trendDays]);
+  }, [chartBuckets, chartMax]);
 
-  const clearGoalDraft = () => setGoalDraft(initialGoalDraft);
+  const primaryStat = useMemo(
+    () => getPrimaryStatValue(statsMetric, periodGoals, periodEntries),
+    [periodEntries, periodGoals, statsMetric],
+  );
+  const strongestBucket = chartBuckets.reduce(
+    (best, bucket) => (bucket.value > best.value ? bucket : best),
+    chartBuckets[0] ?? { label: "暂无", value: 0 },
+  );
+
+  const celebrationGoal =
+    goalSummaries.find((goal) => goal.id === completionGoalId) ?? (activeGoal?.completionDate ? activeGoal : null);
 
   const openGoal = (goalId: string) => {
     setSelectedGoalId(goalId);
     setScreen("detail");
   };
 
-  const handleSaveGoal = () => {
+  const beginCreateGoal = () => {
+    setEditingGoalId(null);
+    setGoalDraft(initialGoalDraft);
+    setScreen("create");
+  };
+
+  const beginEditGoal = (goal: Goal | GoalSummary) => {
+    setEditingGoalId(goal.id);
+    setGoalDraft(buildGoalDraft(goal));
+    setScreen("create");
+  };
+
+  const saveGoal = () => {
     const title = goalDraft.title.trim();
-    const target = Number(goalDraft.target);
     const unit = goalDraft.unit.trim();
     const icon = goalDraft.icon.trim();
+    const target = Number(goalDraft.target);
 
-    if (!title) {
-      window.alert("请先填写目标名称。");
-      return;
-    }
+    if (!title) return void window.alert("请先填写目标名称。");
+    if (!unit) return void window.alert("请填写单位，可以自定义。");
+    if (!icon) return void window.alert("请填写图标字牌。");
+    if (!Number.isFinite(target) || target <= 0) return void window.alert("总目标需要是大于 0 的数字。");
 
-    if (!unit) {
-      window.alert("请填写单位，可以使用常用单位，也可以自定义。");
-      return;
-    }
-
-    if (!icon) {
-      window.alert("请填写图标字牌，可以自定义 1 到 2 个字。");
-      return;
-    }
-
-    if (!Number.isFinite(target) || target <= 0) {
-      window.alert("总目标需要是大于 0 的数字。");
-      return;
-    }
-
-    const newGoal: Goal = {
-      id: createId("goal"),
+    const payload = {
       title,
       unit,
       target,
@@ -436,23 +611,52 @@ export default function App() {
       dueDate: goalDraft.dueDate,
       themeKey: goalDraft.themeKey,
       icon: icon.slice(0, 2),
-      createdAt: new Date().toISOString(),
+      category: goalDraft.category,
     };
 
-    setGoals((current) => [newGoal, ...current]);
-    setSelectedGoalId(newGoal.id);
-    clearGoalDraft();
-    setScreen("detail");
+    if (editingGoalId) {
+      setGoals((current) => current.map((goal) => (goal.id === editingGoalId ? { ...goal, ...payload } : goal)));
+      setSelectedGoalId(editingGoalId);
+      setScreen("detail");
+    } else {
+      const newGoal: Goal = {
+        id: createId("goal"),
+        createdAt: new Date().toISOString(),
+        ...payload,
+      };
+      setGoals((current) => [newGoal, ...current]);
+      setSelectedGoalId(newGoal.id);
+      setScreen("detail");
+    }
+
+    setEditingGoalId(null);
+    setGoalDraft(initialGoalDraft);
+    setHasClearedData(false);
   };
 
-  const handleAddRecord = () => {
-    if (!activeGoal) return;
+  const deleteGoal = (goalId: string) => {
+    const targetGoal = goals.find((goal) => goal.id === goalId);
+    if (!targetGoal) return;
+    if (!window.confirm("确定删除这个目标吗？相关历史记录也会一起删除。")) return;
 
-    const amount = Number(recordAmount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      window.alert("请输入大于 0 的进度数值。");
-      return;
+    const nextGoals = goals.filter((goal) => goal.id !== goalId);
+    setGoals(nextGoals);
+    setEntries((current) => current.filter((entry) => entry.goalId !== goalId));
+    setHomeMenuGoalId(null);
+    setDetailMenuOpen(false);
+    setEditingGoalId((current) => (current === goalId ? null : current));
+    setHasClearedData(false);
+
+    if (selectedGoalId === goalId) {
+      setSelectedGoalId(nextGoals[0]?.id ?? null);
+      setScreen("home");
     }
+  };
+
+  const addRecord = () => {
+    if (!activeGoal) return;
+    const amount = Number(recordAmount);
+    if (!Number.isFinite(amount) || amount <= 0) return void window.alert("请输入大于 0 的进度数值。");
 
     const previousTotal = activeGoal.current;
     const nextEntry: Entry = {
@@ -466,6 +670,7 @@ export default function App() {
     setEntries((current) => [nextEntry, ...current]);
     setRecordAmount("1");
     setRecordNote("");
+    setHasClearedData(false);
 
     if (previousTotal < activeGoal.target && previousTotal + amount >= activeGoal.target) {
       setCompletionGoalId(activeGoal.id);
@@ -473,130 +678,196 @@ export default function App() {
     }
   };
 
-  const handleDeleteEntry = (entryId: string) => {
-    const targetEntry = entries.find((entry) => entry.id === entryId);
-    if (!targetEntry) return;
-
-    const confirmed = window.confirm("确认删除这条记录吗？");
-    if (!confirmed) return;
-
+  const deleteEntry = (entryId: string) => {
+    if (!window.confirm("确认删除这条记录吗？")) return;
     setEntries((current) => current.filter((entry) => entry.id !== entryId));
+    setHasClearedData(false);
   };
 
-  const handleResetDemoData = () => {
-    const confirmed = window.confirm("要恢复为示例数据吗？这会覆盖当前本地保存内容。");
-    if (!confirmed) return;
-
-    setGoals(seedGoals);
-    setEntries(seedEntries);
-    setSelectedGoalId(seedGoals[0]?.id ?? null);
-    setCompletionGoalId(null);
-    clearGoalDraft();
+  const clearAllData = () => {
+    if (!window.confirm("确定要清空所有目标和记录吗？这个操作无法撤回。建议你先导出备份。")) return;
+    setGoals([]);
+    setEntries([]);
+    setSelectedGoalId(null);
+    setGoalDraft(initialGoalDraft);
     setRecordAmount("1");
     setRecordNote("");
+    setCompletionGoalId(null);
+    setEditingGoalId(null);
+    setHomeMenuGoalId(null);
+    setDetailMenuOpen(false);
+    setHasClearedData(true);
     setScreen("home");
   };
 
-  return (
-    <div className="min-h-full bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.96),_rgba(245,241,255,0.95)_36%,_rgba(249,249,252,0.98)_100%)] px-3 py-4 text-slate-900 sm:px-6 sm:py-8">
-      <div className="mx-auto flex w-full max-w-[430px] flex-col gap-4">
-        <PreviewTabs screen={screen} onChange={setScreen} />
+  const exportData = () => {
+    const blob = new Blob(
+      [
+        JSON.stringify(
+          {
+            exportedAt: new Date().toISOString(),
+            goals,
+            entries,
+            selectedGoalId,
+            appInitialized: true,
+            hasClearedData,
+          },
+          null,
+          2,
+        ),
+      ],
+      { type: "application/json;charset=utf-8" },
+    );
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `100-hour-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    window.URL.revokeObjectURL(url);
+  };
 
-        <div className="relative overflow-hidden rounded-[36px] border border-white/80 bg-white/72 shadow-[0_30px_100px_rgba(160,160,176,0.16)] backdrop-blur-xl">
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-28 bg-[radial-gradient(circle_at_top,_rgba(201,193,255,0.24),_transparent_72%)]" />
-          <div className="relative min-h-[880px]">
-            {screen === "home" && (
-              <HomeScreen
-                goals={goalSummaries}
-                onOpenGoal={openGoal}
-                onCreate={() => setScreen("create")}
-                onStats={() => setScreen("stats")}
-                onResetDemoData={handleResetDemoData}
-              />
-            )}
-            {screen === "detail" && (
-              <DetailScreen
-                goal={activeGoal}
-                entries={activeGoalEntries}
-                recordAmount={recordAmount}
-                recordNote={recordNote}
-                onBack={() => setScreen("home")}
-                onRecordAmountChange={setRecordAmount}
-                onRecordNoteChange={setRecordNote}
-                onSaveRecord={handleAddRecord}
-                onDeleteEntry={handleDeleteEntry}
-              />
-            )}
-            {screen === "create" && (
-              <CreateScreen
-                draft={goalDraft}
-                onCancel={() => setScreen("home")}
-                onChange={setGoalDraft}
-                onSave={handleSaveGoal}
-              />
-            )}
-            {screen === "stats" && (
-              <StatsScreen
-                goals={goalSummaries}
-                totalGoals={stats.totalGoals}
-                completedGoals={stats.completedGoals}
-                totalInvested={stats.totalInvested}
-                trendLabels={stats.trendDays.map((item) => item.label)}
-                trendValues={stats.trendDays.map((item) => item.value)}
-                trendPoints={trendPoints}
-                onHome={() => setScreen("home")}
-                onOpenGoal={openGoal}
-              />
-            )}
-            {screen === "complete" && (
-              <CompleteScreen
-                goal={celebrationGoal}
-                onAppend={() => {
-                  if (celebrationGoal) setSelectedGoalId(celebrationGoal.id);
-                  setScreen("detail");
-                }}
-                onCreate={() => setScreen("create")}
-              />
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+  const handleImportChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as Partial<PersistedState>;
+      const nextGoals = Array.isArray(parsed.goals)
+        ? parsed.goals
+            .filter((goal): goal is Goal & { id: string; title: string; createdAt: string } => Boolean(goal?.id && goal?.title && goal?.createdAt))
+            .map(normalizeGoal)
+        : [];
+      const validGoalIds = new Set(nextGoals.map((goal) => goal.id));
+      const nextEntries = Array.isArray(parsed.entries)
+        ? parsed.entries
+            .filter((entry): entry is Entry & { id: string; goalId: string; createdAt: string } => Boolean(entry?.id && entry?.goalId && entry?.createdAt))
+            .map(normalizeEntry)
+            .filter((entry) => validGoalIds.has(entry.goalId))
+        : [];
+      const nextSelectedGoalId =
+        typeof parsed.selectedGoalId === "string" && validGoalIds.has(parsed.selectedGoalId)
+          ? parsed.selectedGoalId
+          : nextGoals[0]?.id ?? null;
 
-function PreviewTabs({
-  screen,
-  onChange,
-}: {
-  screen: Screen;
-  onChange: (screen: Screen) => void;
-}) {
-  const tabs: { id: Screen; label: string }[] = [
-    { id: "home", label: "首页" },
-    { id: "detail", label: "目标详情" },
-    { id: "create", label: "新建目标" },
-    { id: "stats", label: "统计页" },
-    { id: "complete", label: "完成页" },
-  ];
+      setGoals(nextGoals);
+      setEntries(nextEntries);
+      setSelectedGoalId(nextSelectedGoalId);
+      setGoalDraft(initialGoalDraft);
+      setEditingGoalId(null);
+      setRecordAmount("1");
+      setRecordNote("");
+      setCompletionGoalId(null);
+      setHasClearedData(nextGoals.length === 0 && nextEntries.length === 0);
+      setScreen("home");
+      window.alert("导入成功，数据已替换为备份内容。");
+    } catch {
+      window.alert("导入失败，请确认备份文件格式正确。");
+    } finally {
+      event.target.value = "";
+    }
+  };
 
   return (
-    <div className="rounded-[28px] border border-white/70 bg-white/78 p-2 shadow-[0_10px_40px_rgba(148,163,184,0.12)] backdrop-blur">
-      <div className="flex flex-wrap gap-2">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => onChange(tab.id)}
-            className={[
-              "min-w-0 rounded-full px-4 py-2 text-[13px] font-semibold transition active:scale-[0.98]",
-              screen === tab.id
-                ? "bg-[linear-gradient(135deg,_#7f78da,_#a29bff,_#d8d4ff)] text-slate-900 shadow-[0_12px_28px_rgba(162,155,255,0.30)]"
-                : "bg-white/90 text-slate-500",
-            ].join(" ")}
-          >
-            {tab.label}
-          </button>
-        ))}
+    <div className="min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.96),_rgba(245,241,255,0.95)_36%,_rgba(249,249,252,0.98)_100%)] px-3 py-4 text-slate-900 sm:px-6 sm:py-8">
+      <input ref={importInputRef} type="file" accept="application/json" className="hidden" onChange={handleImportChange} />
+
+      <div className="mx-auto w-full max-w-[430px] overflow-hidden rounded-[36px] border border-white/80 bg-white/72 shadow-[0_30px_100px_rgba(160,160,176,0.16)] backdrop-blur-xl">
+        {screen === "home" && (
+          <HomeScreen
+            goals={goalSummaries}
+            menuGoalId={homeMenuGoalId}
+            onOpenGoal={openGoal}
+            onCreate={beginCreateGoal}
+            onStats={() => setScreen("stats")}
+            onProfile={() => setScreen("profile")}
+            onToggleMenu={(goalId) => setHomeMenuGoalId((current) => (current === goalId ? null : goalId))}
+            onEditGoal={(goalId) => {
+              const goal = goals.find((item) => item.id === goalId);
+              if (goal) beginEditGoal(goal);
+            }}
+            onDeleteGoal={deleteGoal}
+          />
+        )}
+
+        {screen === "detail" && (
+          <DetailScreen
+            goal={activeGoal}
+            entries={activeGoalEntries}
+            recordAmount={recordAmount}
+            recordNote={recordNote}
+            menuOpen={detailMenuOpen}
+            onBack={() => setScreen("home")}
+            onRecordAmountChange={setRecordAmount}
+            onRecordNoteChange={setRecordNote}
+            onSaveRecord={addRecord}
+            onDeleteEntry={deleteEntry}
+            onToggleMenu={() => setDetailMenuOpen((current) => !current)}
+            onEditGoal={() => activeGoal && beginEditGoal(activeGoal)}
+            onDeleteGoal={() => activeGoal && deleteGoal(activeGoal.id)}
+          />
+        )}
+
+        {screen === "create" && (
+          <CreateScreen
+            draft={goalDraft}
+            isEditing={Boolean(editingGoalId)}
+            onCancel={() => {
+              setEditingGoalId(null);
+              setGoalDraft(initialGoalDraft);
+              setScreen(activeGoal ? "detail" : "home");
+            }}
+            onChange={setGoalDraft}
+            onSave={saveGoal}
+          />
+        )}
+
+        {screen === "stats" && (
+          <StatsScreen
+            goals={goalSummaries}
+            filteredGoals={filteredStatsGoals}
+            range={statsRange}
+            metric={statsMetric}
+            goalFilter={statsGoalFilter}
+            rankSort={rankSort}
+            rankCategory={rankCategory}
+            chartBuckets={chartBuckets}
+            chartMax={chartMax}
+            trendPoints={trendPoints}
+            primaryStat={primaryStat}
+            strongestBucket={strongestBucket}
+            onHome={() => setScreen("home")}
+            onProfile={() => setScreen("profile")}
+            onOpenGoal={openGoal}
+            onRangeChange={setStatsRange}
+            onMetricChange={setStatsMetric}
+            onGoalFilterChange={setStatsGoalFilter}
+            onRankSortChange={setRankSort}
+            onRankCategoryChange={setRankCategory}
+          />
+        )}
+
+        {screen === "profile" && (
+          <ProfileScreen
+            goals={goalSummaries}
+            entries={entries}
+            hasClearedData={hasClearedData}
+            onHome={() => setScreen("home")}
+            onStats={() => setScreen("stats")}
+            onExport={exportData}
+            onImport={() => importInputRef.current?.click()}
+            onClearAll={clearAllData}
+          />
+        )}
+
+        {screen === "complete" && (
+          <CompleteScreen
+            goal={celebrationGoal}
+            onAppend={() => {
+              if (celebrationGoal) setSelectedGoalId(celebrationGoal.id);
+              setScreen("detail");
+            }}
+            onCreate={beginCreateGoal}
+          />
+        )}
       </div>
     </div>
   );
@@ -604,20 +875,27 @@ function PreviewTabs({
 
 function HomeScreen({
   goals,
+  menuGoalId,
   onOpenGoal,
   onCreate,
   onStats,
-  onResetDemoData,
+  onProfile,
+  onToggleMenu,
+  onEditGoal,
+  onDeleteGoal,
 }: {
   goals: GoalSummary[];
+  menuGoalId: string | null;
   onOpenGoal: (goalId: string) => void;
   onCreate: () => void;
   onStats: () => void;
-  onResetDemoData: () => void;
+  onProfile: () => void;
+  onToggleMenu: (goalId: string) => void;
+  onEditGoal: (goalId: string) => void;
+  onDeleteGoal: (goalId: string) => void;
 }) {
   return (
-    <div className="pb-[calc(92px+env(safe-area-inset-bottom))] pt-[max(14px,env(safe-area-inset-top))]">
-      <StatusBar />
+    <div className="pb-[calc(92px+env(safe-area-inset-bottom))] pt-4">
       <div className="space-y-4 px-4">
         <section className="relative overflow-hidden rounded-[30px] border border-white/70 bg-[linear-gradient(160deg,_rgba(251,248,255,0.98),_rgba(248,249,252,0.96)_48%,_rgba(255,249,245,0.98))] px-5 pb-5 pt-6 shadow-[0_24px_60px_rgba(206,201,220,0.22)]">
           <div className="absolute inset-x-0 bottom-0 h-24 bg-[radial-gradient(circle_at_24%_100%,_rgba(201,193,255,0.32),_transparent_52%),radial-gradient(circle_at_80%_96%,_rgba(255,216,198,0.34),_transparent_42%)]" />
@@ -628,25 +906,8 @@ function HomeScreen({
                 不是每天都要完美坚持，而是把每一次有效投入都安静地留下来。
               </p>
             </div>
-            <button
-              onClick={onResetDemoData}
-              className="mt-1 h-10 w-10 shrink-0 rounded-full bg-white/82 text-[18px] text-slate-500 shadow-[0_10px_22px_rgba(148,163,184,0.12)]"
-              title="恢复示例数据"
-            >
-              ↺
-            </button>
-          </div>
-
-          <div className="relative mt-6 flex items-end justify-between">
-            <div className="space-y-2">
-              <div className="h-2 w-10 rounded-full bg-violet-200/70" />
-              <div className="h-2 w-16 rounded-full bg-rose-100/80" />
-            </div>
-            <div className="relative h-24 w-28">
-              <div className="absolute bottom-0 right-4 h-16 w-16 rounded-t-[32px] rounded-b-[18px] bg-[linear-gradient(180deg,_#4c4769,_#232235)]" />
-              <div className="absolute bottom-12 right-10 h-8 w-8 rounded-full bg-[#efd4cb]" />
-              <div className="absolute bottom-8 right-4 h-14 w-14 rounded-full bg-[radial-gradient(circle_at_32%_32%,_#bab4ff,_#746cb7)]" />
-              <div className="absolute bottom-0 left-1 h-12 w-20 rounded-[50%] bg-white/40 blur-md" />
+            <div className="rounded-full bg-white/82 px-3 py-1.5 text-[12px] font-semibold text-slate-500 shadow-[0_10px_22px_rgba(148,163,184,0.12)]">
+              手机优先
             </div>
           </div>
         </section>
@@ -662,16 +923,19 @@ function HomeScreen({
           {goals.length === 0 ? (
             <section className="rounded-[26px] border border-white/80 bg-white/88 p-6 text-center shadow-[0_12px_32px_rgba(148,163,184,0.12)]">
               <p className="text-[16px] font-semibold text-slate-900">还没有目标</p>
-              <p className="mt-2 text-[14px] leading-7 text-slate-500">先创建一个想长期积累的方向，我们再把它慢慢填满。</p>
+              <p className="mt-2 text-[14px] leading-7 text-slate-500">
+                现在会严格以你的本地数据为准。清空后不会再自动恢复示例数据。
+              </p>
             </section>
           ) : (
             goals.map((goal) => {
               const theme = getTheme(goal.themeKey);
+              const menuOpen = menuGoalId === goal.id;
 
               return (
                 <article
                   key={goal.id}
-                  className="rounded-[26px] border border-white/80 bg-white/88 p-4 shadow-[0_12px_32px_rgba(148,163,184,0.12)] backdrop-blur"
+                  className="relative rounded-[26px] border border-white/80 bg-white/88 p-4 shadow-[0_12px_32px_rgba(148,163,184,0.12)] backdrop-blur"
                 >
                   <div className="flex items-start gap-3">
                     <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-[18px] font-bold ${theme.accentSoft}`}>
@@ -680,12 +944,39 @@ function HomeScreen({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <h2 className="truncate text-[17px] font-semibold text-slate-900">{goal.title}</h2>
+                          <div className="flex items-center gap-2">
+                            <h2 className="truncate text-[17px] font-semibold text-slate-900">{goal.title}</h2>
+                            <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">{goal.category}</span>
+                          </div>
                           <p className="mt-1 text-[13px] text-slate-400">
                             目标 {formatNumber(goal.target)} {goal.unit}
                           </p>
                         </div>
-                        <span className="shrink-0 text-[14px] font-semibold text-slate-500">{goal.percentLabel}</span>
+                        <div className="relative shrink-0">
+                          <button
+                            onClick={() => onToggleMenu(goal.id)}
+                            className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-50 text-[18px] text-slate-500"
+                            aria-label="目标操作"
+                          >
+                            ⋯
+                          </button>
+                          {menuOpen && (
+                            <div className="absolute right-0 top-11 z-10 w-32 rounded-[18px] border border-white/80 bg-white/95 p-1.5 shadow-[0_16px_32px_rgba(148,163,184,0.18)]">
+                              <button
+                                onClick={() => onEditGoal(goal.id)}
+                                className="flex w-full rounded-[14px] px-3 py-2.5 text-left text-[14px] text-slate-700 hover:bg-slate-50"
+                              >
+                                编辑目标
+                              </button>
+                              <button
+                                onClick={() => onDeleteGoal(goal.id)}
+                                className="flex w-full rounded-[14px] px-3 py-2.5 text-left text-[14px] text-rose-500 hover:bg-rose-50"
+                              >
+                                删除目标
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </div>
 
                       <div className="mt-4 flex items-end justify-between gap-3">
@@ -702,15 +993,9 @@ function HomeScreen({
 
                       <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-slate-400">
                         <span>最近记录：{goal.recentLabel}</span>
-                        {goal.dueDate && (
-                          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-slate-500">截止 {formatShortDate(goal.dueDate)}</span>
-                        )}
-                        {goal.countdownLabel && (
-                          <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-600">{goal.countdownLabel}</span>
-                        )}
-                        {goal.completionDate && (
-                          <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-600">已完成</span>
-                        )}
+                        {goal.dueDate && <span className="rounded-full bg-slate-100 px-2.5 py-1 text-slate-500">截止 {formatShortDate(goal.dueDate)}</span>}
+                        {goal.countdownLabel && <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-600">{goal.countdownLabel}</span>}
+                        {goal.completionDate && <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-600">已完成</span>}
                       </div>
                     </div>
                   </div>
@@ -736,7 +1021,7 @@ function HomeScreen({
         </div>
       </div>
 
-      <BottomNav active="home" onHome={() => undefined} onStats={onStats} />
+      <BottomNav active="home" onHome={() => undefined} onStats={onStats} onProfile={onProfile} />
     </div>
   );
 }
@@ -746,31 +1031,38 @@ function DetailScreen({
   entries,
   recordAmount,
   recordNote,
+  menuOpen,
   onBack,
   onRecordAmountChange,
   onRecordNoteChange,
   onSaveRecord,
   onDeleteEntry,
+  onToggleMenu,
+  onEditGoal,
+  onDeleteGoal,
 }: {
   goal: GoalSummary | null;
   entries: Entry[];
   recordAmount: string;
   recordNote: string;
+  menuOpen: boolean;
   onBack: () => void;
   onRecordAmountChange: (value: string) => void;
   onRecordNoteChange: (value: string) => void;
   onSaveRecord: () => void;
   onDeleteEntry: (entryId: string) => void;
+  onToggleMenu: () => void;
+  onEditGoal: () => void;
+  onDeleteGoal: () => void;
 }) {
   if (!goal) {
     return (
-      <div className="pb-10 pt-[max(14px,env(safe-area-inset-top))]">
-        <StatusBar />
+      <div className="pb-10 pt-4">
         <div className="space-y-4 px-4">
           <TopBar title="目标详情" left="‹" right="⋯" onLeft={onBack} />
           <section className="rounded-[28px] border border-white/80 bg-white/92 p-6 text-center shadow-[0_14px_40px_rgba(148,163,184,0.12)]">
             <p className="text-[16px] font-semibold text-slate-900">还没有可查看的目标</p>
-            <p className="mt-2 text-[14px] leading-7 text-slate-500">去首页先创建一个目标，这里就会显示真实进度和历史记录。</p>
+            <p className="mt-2 text-[14px] leading-7 text-slate-500">回到首页新建一个目标后，这里就会显示详情和历史记录。</p>
           </section>
         </div>
       </div>
@@ -782,15 +1074,29 @@ function DetailScreen({
   const partial = goal.current - whole;
 
   return (
-    <div className="pb-10 pt-[max(14px,env(safe-area-inset-top))]">
-      <StatusBar />
+    <div className="pb-10 pt-4">
       <div className="space-y-4 px-4">
-        <TopBar title={goal.title} left="‹" right="⋯" onLeft={onBack} />
+        <TopBar title={goal.title} left="‹" right="⋯" onLeft={onBack} onRight={onToggleMenu} />
+        {menuOpen && (
+          <div className="relative z-10 -mt-2 flex justify-end">
+            <div className="w-36 rounded-[18px] border border-white/80 bg-white/95 p-1.5 shadow-[0_16px_32px_rgba(148,163,184,0.18)]">
+              <button onClick={onEditGoal} className="flex w-full rounded-[14px] px-3 py-2.5 text-left text-[14px] text-slate-700 hover:bg-slate-50">
+                编辑目标
+              </button>
+              <button onClick={onDeleteGoal} className="flex w-full rounded-[14px] px-3 py-2.5 text-left text-[14px] text-rose-500 hover:bg-rose-50">
+                删除目标
+              </button>
+            </div>
+          </div>
+        )}
 
         <section className="rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_14px_40px_rgba(148,163,184,0.12)]">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="text-[13px] font-semibold text-slate-500">完成进度</p>
+              <div className="flex items-center gap-2">
+                <p className="text-[13px] font-semibold text-slate-500">完成进度</p>
+                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] text-slate-500">{goal.category}</span>
+              </div>
               <p className="mt-2 text-[16px] text-slate-500">
                 <span className="text-[52px] font-black tracking-[-0.06em] text-slate-900">{formatNumber(goal.current)}</span>
                 <span className="ml-1">/ {formatNumber(goal.target)} {goal.unit}</span>
@@ -801,22 +1107,17 @@ function DetailScreen({
 
           {(goal.dueDate || goal.countdownLabel) && (
             <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]">
-              {goal.dueDate && (
-                <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-500">截止 {formatFullDate(goal.dueDate)}</span>
-              )}
-              {goal.countdownLabel && (
-                <span className="rounded-full bg-amber-50 px-3 py-1 font-medium text-amber-600">{goal.countdownLabel}</span>
-              )}
+              {goal.dueDate && <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-500">截止 {formatFullDate(goal.dueDate)}</span>}
+              {goal.countdownLabel && <span className="rounded-full bg-amber-50 px-3 py-1 font-medium text-amber-600">{goal.countdownLabel}</span>}
             </div>
           )}
 
-          <p className="mt-3 text-[13px] leading-6 text-slate-500">每一次记录，都是在给未来的自己留下一点真实证据。</p>
+          <p className="mt-3 text-[13px] leading-6 text-slate-500">{goal.description || "每一次记录，都是在给未来的自己留下真实证据。"}</p>
 
           <div className="mt-5 grid grid-cols-10 gap-1.5">
             {Array.from({ length: 100 }).map((_, index) => {
               const filled = index < whole;
               const partialCell = index === whole && partial > 0;
-
               return (
                 <div key={index} className="relative aspect-square overflow-hidden rounded-[6px] bg-[#efedf4]">
                   {(filled || partialCell) && (
@@ -852,9 +1153,7 @@ function DetailScreen({
               className="min-w-0 flex-1 rounded-[18px] border border-slate-200 bg-white px-4 py-4 text-[24px] font-black text-slate-900 outline-none placeholder:text-slate-300"
               placeholder="1"
             />
-            <div className="flex w-24 items-center justify-center rounded-[18px] border border-slate-200 bg-white px-4 py-4 text-[15px] text-slate-600">
-              {goal.unit}
-            </div>
+            <div className="flex w-24 items-center justify-center rounded-[18px] border border-slate-200 bg-white px-4 py-4 text-[15px] text-slate-600">{goal.unit}</div>
           </div>
           <textarea
             value={recordNote}
@@ -878,9 +1177,7 @@ function DetailScreen({
           </div>
 
           {entries.length === 0 ? (
-            <div className="rounded-[20px] bg-slate-50 px-4 py-5 text-[14px] leading-7 text-slate-500">
-              还没有历史记录。保存第一条后，这里会自动按时间倒序展示。
-            </div>
+            <div className="rounded-[20px] bg-slate-50 px-4 py-5 text-[14px] leading-7 text-slate-500">还没有历史记录。保存第一条后，这里会自动按时间倒序展示。</div>
           ) : (
             <div className="space-y-4">
               {entries.map((entry) => (
@@ -893,14 +1190,9 @@ function DetailScreen({
                       <p className="mt-1 text-[13px] text-slate-400">
                         {formatShortDate(entry.createdAt)} {formatTime(entry.createdAt)}
                       </p>
-                      <p className="mt-2 break-words text-[14px] leading-7 text-slate-600">
-                        {entry.note || "这次没有填写备注。"}
-                      </p>
+                      <p className="mt-2 break-words text-[14px] leading-7 text-slate-600">{entry.note || "这次没有填写备注。"}</p>
                     </div>
-                    <button
-                      onClick={() => onDeleteEntry(entry.id)}
-                      className="shrink-0 rounded-full bg-rose-50 px-3 py-2 text-[13px] font-semibold text-rose-500"
-                    >
+                    <button onClick={() => onDeleteEntry(entry.id)} className="shrink-0 rounded-full bg-rose-50 px-3 py-2 text-[13px] font-semibold text-rose-500">
                       删除
                     </button>
                   </div>
@@ -916,24 +1208,25 @@ function DetailScreen({
 
 function CreateScreen({
   draft,
+  isEditing,
   onCancel,
   onChange,
   onSave,
 }: {
   draft: GoalDraft;
+  isEditing: boolean;
   onCancel: () => void;
   onChange: (draft: GoalDraft) => void;
   onSave: () => void;
 }) {
   return (
-    <div className="pb-8 pt-[max(14px,env(safe-area-inset-top))]">
-      <StatusBar />
+    <div className="pb-8 pt-4">
       <div className="space-y-4 px-4">
         <div className="flex items-center justify-between px-1 py-1 text-[16px] font-semibold">
           <button onClick={onCancel} className="text-slate-600">
             取消
           </button>
-          <h1 className="text-[17px] font-semibold text-slate-900">新建目标</h1>
+          <h1 className="text-[17px] font-semibold text-slate-900">{isEditing ? "编辑目标" : "新建目标"}</h1>
           <button onClick={onSave} className="text-slate-900">
             保存
           </button>
@@ -942,9 +1235,9 @@ function CreateScreen({
         <section className="rounded-[30px] border border-white/80 bg-white/92 p-5 shadow-[0_14px_40px_rgba(148,163,184,0.12)]">
           <div className="flex flex-col items-center">
             <div className="flex h-24 w-24 items-center justify-center rounded-full bg-[radial-gradient(circle_at_30%_30%,_#f7f4ff,_#d9d2ff)] text-[30px] font-bold text-slate-700 shadow-inner">
-              {draft.icon || "芽"}
+              {draft.icon || "学"}
             </div>
-            <p className="mt-3 text-[15px] font-medium text-slate-600">图标字牌支持预设，也支持你直接自定义</p>
+            <p className="mt-3 text-[15px] font-medium text-slate-600">单位和图标字牌都支持自定义</p>
           </div>
 
           <div className="mt-6 space-y-4">
@@ -957,20 +1250,21 @@ function CreateScreen({
               />
             </Field>
 
+            <Field label="分类">
+              <div className="flex flex-wrap gap-2">
+                {categories.map((category) => (
+                  <button key={category} onClick={() => onChange({ ...draft, category })} className={chipClass(draft.category === category)}>
+                    {category}
+                  </button>
+                ))}
+              </div>
+            </Field>
+
             <Field label="单位">
               <div className="space-y-3">
                 <div className="flex flex-wrap gap-2">
                   {commonUnits.map((unit) => (
-                    <button
-                      key={unit}
-                      onClick={() => onChange({ ...draft, unit })}
-                      className={[
-                        "rounded-full border px-3 py-2 text-[13px] font-semibold transition",
-                        draft.unit === unit
-                          ? "border-slate-900 bg-slate-900 text-white"
-                          : "border-slate-200 bg-white text-slate-600",
-                      ].join(" ")}
-                    >
+                    <button key={unit} onClick={() => onChange({ ...draft, unit })} className={chipClass(draft.unit === unit)}>
                       {unit}
                     </button>
                   ))}
@@ -979,14 +1273,8 @@ function CreateScreen({
                   value={draft.unit}
                   onChange={(event) => onChange({ ...draft, unit: event.target.value })}
                   className="h-[54px] w-full rounded-[18px] border border-slate-200 bg-white px-4 text-[15px] text-slate-700 outline-none placeholder:text-slate-300"
-                  placeholder="也可以输入自定义单位，例如：节、组、单词"
-                  list="unit-suggestions"
+                  placeholder="也可以输入自定义单位，例如：组、首、句"
                 />
-                <datalist id="unit-suggestions">
-                  {commonUnits.map((unit) => (
-                    <option key={unit} value={unit} />
-                  ))}
-                </datalist>
               </div>
             </Field>
 
@@ -1027,9 +1315,7 @@ function CreateScreen({
                       onClick={() => onChange({ ...draft, icon })}
                       className={[
                         "flex h-11 w-11 items-center justify-center rounded-full border text-[16px] font-semibold transition",
-                        draft.icon === icon
-                          ? "border-slate-900 bg-slate-900 text-white"
-                          : "border-slate-200 bg-white text-slate-600",
+                        draft.icon === icon ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-600",
                       ].join(" ")}
                     >
                       {icon}
@@ -1040,7 +1326,7 @@ function CreateScreen({
                   value={draft.icon}
                   onChange={(event) => onChange({ ...draft, icon: event.target.value.slice(0, 2) })}
                   className="h-[54px] w-full rounded-[18px] border border-slate-200 bg-white px-4 text-[15px] text-slate-700 outline-none placeholder:text-slate-300"
-                  placeholder="也可以输入自定义字牌，例如：画、背、琴"
+                  placeholder="也可以输入自定义字牌，例如：琴、画、背"
                 />
               </div>
             </Field>
@@ -1053,30 +1339,12 @@ function CreateScreen({
                     onClick={() => onChange({ ...draft, themeKey: theme.key })}
                     className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-[13px] font-semibold text-slate-600"
                   >
-                    <span
-                      className={[
-                        "h-6 w-6 rounded-full bg-gradient-to-br",
-                        theme.accent,
-                        draft.themeKey === theme.key ? "ring-4 ring-slate-100" : "",
-                      ].join(" ")}
-                    />
+                    <span className={["h-6 w-6 rounded-full bg-gradient-to-br", theme.accent, draft.themeKey === theme.key ? "ring-4 ring-slate-100" : ""].join(" ")} />
                     {theme.label}
                   </button>
                 ))}
               </div>
             </Field>
-          </div>
-        </section>
-
-        <section className="rounded-[26px] border border-slate-200 bg-[linear-gradient(180deg,_rgba(251,250,255,0.96),_rgba(247,247,249,0.96))] p-4 shadow-[0_12px_30px_rgba(148,163,184,0.08)]">
-          <div className="flex gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-100 text-slate-600">灯</div>
-            <div className="min-w-0">
-              <p className="text-[15px] font-semibold text-slate-700">小提示</p>
-              <p className="mt-1 break-words text-[14px] leading-6 text-slate-500">
-                目标可以很轻，不用设得太满。先让自己愿意回来记录，往往比一开始就设太难更重要。
-              </p>
-            </div>
           </div>
         </section>
       </div>
@@ -1086,44 +1354,64 @@ function CreateScreen({
 
 function StatsScreen({
   goals,
-  totalGoals,
-  completedGoals,
-  totalInvested,
-  trendLabels,
-  trendValues,
+  filteredGoals,
+  range,
+  metric,
+  goalFilter,
+  rankSort,
+  rankCategory,
+  chartBuckets,
+  chartMax,
   trendPoints,
+  primaryStat,
+  strongestBucket,
   onHome,
+  onProfile,
   onOpenGoal,
+  onRangeChange,
+  onMetricChange,
+  onGoalFilterChange,
+  onRankSortChange,
+  onRankCategoryChange,
 }: {
   goals: GoalSummary[];
-  totalGoals: number;
-  completedGoals: number;
-  totalInvested: number;
-  trendLabels: string[];
-  trendValues: number[];
+  filteredGoals: GoalSummary[];
+  range: RangeFilter;
+  metric: MetricFilter;
+  goalFilter: GoalFilter;
+  rankSort: RankSort;
+  rankCategory: Category | "全部";
+  chartBuckets: ChartBucket[];
+  chartMax: number;
   trendPoints: string;
+  primaryStat: number;
+  strongestBucket: ChartBucket;
   onHome: () => void;
+  onProfile: () => void;
   onOpenGoal: (goalId: string) => void;
+  onRangeChange: (value: RangeFilter) => void;
+  onMetricChange: (value: MetricFilter) => void;
+  onGoalFilterChange: (value: GoalFilter) => void;
+  onRankSortChange: (value: RankSort) => void;
+  onRankCategoryChange: (value: Category | "全部") => void;
 }) {
-  const chartMax = Math.max(...trendValues, 1);
-  const completionRate = totalGoals > 0 ? Math.round((completedGoals / totalGoals) * 100) : 0;
-  const weeklyTotal = trendValues.reduce((sum, value) => sum + value, 0);
-  const dailyAverage = weeklyTotal > 0 ? weeklyTotal / Math.max(trendValues.length, 1) : 0;
-  const strongestDay = trendValues.reduce(
-    (best, value, index) => (value > best.value ? { value, label: trendLabels[index] ?? "" } : best),
-    { value: 0, label: trendLabels[0] ?? "" },
-  );
-  const topGoal = goals.reduce<GoalSummary | null>((best, goal) => {
-    if (!best) return goal;
-    return goal.percent > best.percent ? goal : best;
-  }, null);
-  const nearestDeadlineGoal = goals
-    .filter((goal) => goal.dueDate && goal.countdownLabel && goal.countdownLabel !== "已到期")
+  const completedGoals = filteredGoals.filter((goal) => goal.completionDate).length;
+  const totalRecordCount = filteredGoals.reduce((sum, goal) => sum + goal.recordCount, 0);
+  const completionRate = filteredGoals.length > 0 ? Math.round((completedGoals / filteredGoals.length) * 100) : 0;
+  const nearestDeadline = filteredGoals
+    .filter((goal) => goal.countdownLabel && goal.countdownLabel !== "已到期")
     .sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime())[0];
+  const rankingGoals = [...filteredGoals]
+    .filter((goal) => (rankCategory === "全部" ? true : goal.category === rankCategory))
+    .sort((a, b) => {
+      if (rankSort === "current") return b.current - a.current;
+      if (rankSort === "records") return b.recordCount - a.recordCount;
+      if (rankSort === "createdAt") return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      return b.percent - a.percent;
+    });
 
   return (
-    <div className="pb-[calc(92px+env(safe-area-inset-bottom))] pt-[max(14px,env(safe-area-inset-top))]">
-      <StatusBar />
+    <div className="pb-[calc(92px+env(safe-area-inset-bottom))] pt-4">
       <div className="space-y-4 px-4">
         <div className="px-1 py-2 text-center">
           <h1 className="text-[20px] font-black tracking-[-0.03em] text-slate-900">数据统计</h1>
@@ -1133,14 +1421,12 @@ function StatsScreen({
           <div className="border-b border-white/80 px-5 pb-4 pt-5">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-slate-400">Overview</p>
+                <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-slate-400">Dashboard</p>
                 <h2 className="mt-2 text-[24px] font-black tracking-[-0.05em] text-slate-900">
-                  {formatNumber(totalInvested)}
-                  <span className="ml-1 text-[15px] font-semibold text-slate-500">累计投入</span>
+                  {formatNumber(primaryStat)}
+                  <span className="ml-1 text-[15px] font-semibold text-slate-500">{getMetricLabel(metric)}</span>
                 </h2>
-                <p className="mt-2 text-[13px] leading-6 text-slate-500">
-                  这周累计 {formatNumber(weeklyTotal)}，平均每天 {formatNumber(dailyAverage)}。
-                </p>
+                <p className="mt-2 text-[13px] leading-6 text-slate-500">当前看板会跟随时间范围、指标和目标筛选一起变化，更适合快速看趋势。</p>
               </div>
               <div className="rounded-[22px] bg-white/92 px-4 py-3 text-right shadow-[0_12px_24px_rgba(148,163,184,0.10)]">
                 <p className="text-[12px] text-slate-400">完成率</p>
@@ -1151,9 +1437,9 @@ function StatsScreen({
 
           <div className="grid grid-cols-3 gap-px bg-white/70">
             {[
-              { label: "目标总数", value: `${totalGoals}`, tone: "text-slate-900" },
+              { label: "目标总数", value: `${filteredGoals.length}`, tone: "text-slate-900" },
               { label: "已完成", value: `${completedGoals}`, tone: "text-emerald-600" },
-              { label: "最佳单日", value: strongestDay.value > 0 ? formatNumber(strongestDay.value) : "0", tone: "text-violet-600" },
+              { label: "记录总数", value: `${totalRecordCount}`, tone: "text-violet-600" },
             ].map((item) => (
               <div key={item.label} className="bg-white/85 px-4 py-4 text-center">
                 <p className={`text-[28px] font-black tracking-[-0.05em] ${item.tone}`}>{item.value}</p>
@@ -1164,22 +1450,42 @@ function StatsScreen({
         </section>
 
         <section className="rounded-[28px] border border-white/80 bg-white/92 p-4 shadow-[0_14px_40px_rgba(148,163,184,0.1)]">
+          <div className="space-y-3">
+            <FilterRow label="时间范围" options={rangeOptions} activeKey={range} onChange={onRangeChange} />
+            <FilterRow label="统计指标" options={metricOptions} activeKey={metric} onChange={onMetricChange} />
+            <div>
+              <p className="mb-2 text-[13px] font-semibold text-slate-500">目标筛选</p>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => onGoalFilterChange("all")} className={chipClass(goalFilter === "all")}>
+                  全部目标
+                </button>
+                {goals.map((goal) => (
+                  <button key={goal.id} onClick={() => onGoalFilterChange(goal.id)} className={chipClass(goalFilter === goal.id)}>
+                    {goal.title}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-[28px] border border-white/80 bg-white/92 p-4 shadow-[0_14px_40px_rgba(148,163,184,0.1)]">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-[16px] font-semibold text-slate-900">近 7 天投入趋势</h2>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-[12px] font-semibold text-slate-500">自动统计</span>
+            <h2 className="text-[16px] font-semibold text-slate-900">趋势图</h2>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-[12px] font-semibold text-slate-500">{getMetricLabel(metric)}</span>
           </div>
 
           <div className="overflow-hidden rounded-[22px] bg-[linear-gradient(180deg,_rgba(250,249,253,0.98),_rgba(255,255,255,0.98))] p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <p className="text-[12px] text-slate-400">峰值日期</p>
+                <p className="text-[12px] text-slate-400">峰值区间</p>
                 <p className="mt-1 text-[15px] font-semibold text-slate-900">
-                  {strongestDay.label || "本周暂无"}
-                  {strongestDay.value > 0 ? ` · ${formatNumber(strongestDay.value)}` : ""}
+                  {strongestBucket.label}
+                  {strongestBucket.value > 0 ? ` · ${formatNumber(strongestBucket.value)}` : ""}
                 </p>
               </div>
               <div className="rounded-full bg-white px-3 py-2 text-[12px] font-semibold text-slate-500 shadow-[0_8px_16px_rgba(148,163,184,0.08)]">
-                平均 {formatNumber(dailyAverage)} / 天
+                当前指标：{getMetricLabel(metric)}
               </div>
             </div>
 
@@ -1195,16 +1501,18 @@ function StatsScreen({
               ))}
               <polyline fill="url(#trendFill)" stroke="none" points={`${trendPoints} 280,140 0,140`} />
               <polyline fill="none" stroke="#7f78da" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" points={trendPoints} />
-              {trendValues.map((value, index) => {
-                const x = (index / Math.max(trendValues.length - 1, 1)) * 280;
-                const y = 120 - (value / chartMax) * 120;
-                return <circle key={trendLabels[index]} cx={x} cy={y} r="4.5" fill="#fff" stroke="#7f78da" strokeWidth="2.5" />;
+              {chartBuckets.map((bucket, index) => {
+                const x = (index / Math.max(chartBuckets.length - 1, 1)) * 280;
+                const y = 120 - (bucket.value / chartMax) * 120;
+                return <circle key={`${bucket.label}-${index}`} cx={x} cy={y} r="4.5" fill="#fff" stroke="#7f78da" strokeWidth="2.5" />;
               })}
             </svg>
 
-            <div className="mt-2 flex justify-between text-[12px] text-slate-400">
-              {trendLabels.map((label) => (
-                <span key={label}>{label}</span>
+            <div className="mt-2 flex justify-between gap-2 text-[11px] text-slate-400">
+              {chartBuckets.map((bucket, index) => (
+                <span key={`${bucket.label}-${index}`} className="min-w-0 flex-1 truncate text-center">
+                  {bucket.label}
+                </span>
               ))}
             </div>
           </div>
@@ -1212,69 +1520,152 @@ function StatsScreen({
           <div className="mt-4 grid grid-cols-2 gap-3">
             <div className="rounded-[20px] bg-slate-50 px-4 py-4">
               <p className="text-[12px] text-slate-400">领先目标</p>
-              <p className="mt-2 truncate text-[15px] font-semibold text-slate-900">{topGoal?.title ?? "暂无目标"}</p>
+              <p className="mt-2 truncate text-[15px] font-semibold text-slate-900">{filteredGoals[0]?.title ?? "暂无目标"}</p>
               <p className="mt-1 text-[13px] text-slate-500">
-                {topGoal ? `${topGoal.percentLabel} · ${formatNumber(topGoal.current)} / ${formatNumber(topGoal.target)} ${topGoal.unit}` : "等你开始第一条记录"}
+                {filteredGoals[0]
+                  ? `${filteredGoals[0].percentLabel} · ${formatNumber(filteredGoals[0].current)} / ${formatNumber(filteredGoals[0].target)} ${filteredGoals[0].unit}`
+                  : "创建目标后这里会出现重点观察对象"}
               </p>
             </div>
             <div className="rounded-[20px] bg-slate-50 px-4 py-4">
               <p className="text-[12px] text-slate-400">最近截止</p>
-              <p className="mt-2 truncate text-[15px] font-semibold text-slate-900">{nearestDeadlineGoal?.title ?? "暂无截止时间"}</p>
-              <p className="mt-1 text-[13px] text-slate-500">
-                {nearestDeadlineGoal ? `${formatShortDate(nearestDeadlineGoal.dueDate)} · ${nearestDeadlineGoal.countdownLabel}` : "给目标设置截止时间后会显示"}
-              </p>
+              <p className="mt-2 truncate text-[15px] font-semibold text-slate-900">{nearestDeadline?.title ?? "暂无截止日期"}</p>
+              <p className="mt-1 text-[13px] text-slate-500">{nearestDeadline?.countdownLabel ?? "给目标设置截止日期后，这里会显示倒计时"}</p>
             </div>
           </div>
         </section>
 
         <section className="rounded-[28px] border border-white/80 bg-white/92 p-4 shadow-[0_14px_40px_rgba(148,163,184,0.1)]">
           <div className="mb-4 flex items-center justify-between gap-3">
-            <h2 className="text-[16px] font-semibold text-slate-900">目标完成进度</h2>
-            <span className="text-[12px] text-slate-400">按完成度查看</span>
+            <h2 className="text-[16px] font-semibold text-slate-900">目标排行榜</h2>
+            <span className="text-[12px] text-slate-400">按条件筛选排序</span>
           </div>
 
-          <div className="space-y-4">
-            {goals.map((goal) => {
-              const theme = getTheme(goal.themeKey);
+          <div className="space-y-3">
+            <FilterRow label="排序方式" options={rankOptions} activeKey={rankSort} onChange={onRankSortChange} />
+            <div>
+              <p className="mb-2 text-[13px] font-semibold text-slate-500">分类筛选</p>
+              <div className="flex flex-wrap gap-2">
+                {["全部", ...categories].map((category) => (
+                  <button key={category} onClick={() => onRankCategoryChange(category as Category | "全部")} className={chipClass(rankCategory === category)}>
+                    {category}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
 
-              return (
-                <button
-                  key={goal.id}
-                  onClick={() => onOpenGoal(goal.id)}
-                  className="w-full rounded-[22px] border border-slate-100 bg-[linear-gradient(180deg,_rgba(252,252,253,1),_rgba(247,248,250,0.92))] p-3.5 text-left shadow-[0_10px_24px_rgba(148,163,184,0.06)]"
-                >
-                  <div className="mb-3 flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className={`flex h-8 w-8 items-center justify-center rounded-2xl text-[12px] font-bold ${theme.accentSoft}`}>
-                          {goal.icon}
-                        </span>
-                        <p className="truncate text-[15px] font-semibold text-slate-900">{goal.title}</p>
+          <div className="mt-4 space-y-3">
+            {rankingGoals.length === 0 ? (
+              <div className="rounded-[20px] bg-slate-50 px-4 py-5 text-[14px] leading-7 text-slate-500">当前筛选下还没有目标数据。</div>
+            ) : (
+              rankingGoals.map((goal, index) => {
+                const theme = getTheme(goal.themeKey);
+                return (
+                  <button
+                    key={goal.id}
+                    onClick={() => onOpenGoal(goal.id)}
+                    className="w-full rounded-[22px] border border-slate-100 bg-[linear-gradient(180deg,_rgba(252,252,253,1),_rgba(247,248,250,0.92))] p-3.5 text-left shadow-[0_10px_24px_rgba(148,163,184,0.06)]"
+                  >
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[13px] font-black text-slate-400">#{index + 1}</span>
+                          <span className={`flex h-8 w-8 items-center justify-center rounded-2xl text-[12px] font-bold ${theme.accentSoft}`}>{goal.icon}</span>
+                          <p className="truncate text-[15px] font-semibold text-slate-900">{goal.title}</p>
+                        </div>
+                        <p className="mt-2 text-[13px] text-slate-500">
+                          {formatNumber(goal.current)} / {formatNumber(goal.target)} {goal.unit} · {goal.recordCount} 次记录
+                        </p>
                       </div>
-                      <p className="mt-2 text-[13px] text-slate-500">
-                        {formatNumber(goal.current)} / {formatNumber(goal.target)} {goal.unit}
-                      </p>
+                      <div className="shrink-0 text-right">
+                        <p className="text-[16px] font-black tracking-[-0.03em] text-slate-800">{goal.percentLabel}</p>
+                        <p className="mt-1 text-[11px] text-slate-400">{goal.category}</p>
+                      </div>
                     </div>
-                    <div className="shrink-0 text-right">
-                      <p className="text-[16px] font-black tracking-[-0.03em] text-slate-800">{goal.percentLabel}</p>
-                      {goal.countdownLabel && <p className="mt-1 text-[11px] text-slate-400">{goal.countdownLabel}</p>}
+                    <div className="h-2.5 overflow-hidden rounded-full bg-white">
+                      <div className={`h-full rounded-full bg-gradient-to-r ${theme.accent}`} style={{ width: `${goal.percent}%` }} />
                     </div>
-                  </div>
-                  <div className="h-2.5 overflow-hidden rounded-full bg-white">
-                    <div className={`h-full rounded-full bg-gradient-to-r ${theme.accent}`} style={{ width: `${goal.percent}%` }} />
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
-                    <span className="rounded-full bg-white px-2.5 py-1 text-slate-500">最近：{goal.recentLabel}</span>
-                    {goal.dueDate && <span className="rounded-full bg-white px-2.5 py-1 text-slate-500">截止：{formatShortDate(goal.dueDate)}</span>}
-                  </div>
-                </button>
-              );
-            })}
+                  </button>
+                );
+              })
+            )}
           </div>
         </section>
       </div>
 
-      <BottomNav active="stats" onHome={onHome} onStats={() => undefined} />
+      <BottomNav active="stats" onHome={onHome} onStats={() => undefined} onProfile={onProfile} />
+    </div>
+  );
+}
+
+function ProfileScreen({
+  goals,
+  entries,
+  hasClearedData,
+  onHome,
+  onStats,
+  onExport,
+  onImport,
+  onClearAll,
+}: {
+  goals: GoalSummary[];
+  entries: Entry[];
+  hasClearedData: boolean;
+  onHome: () => void;
+  onStats: () => void;
+  onExport: () => void;
+  onImport: () => void;
+  onClearAll: () => void;
+}) {
+  return (
+    <div className="pb-[calc(92px+env(safe-area-inset-bottom))] pt-4">
+      <div className="space-y-4 px-4">
+        <div className="px-1 py-2 text-center">
+          <h1 className="text-[20px] font-black tracking-[-0.03em] text-slate-900">我的</h1>
+        </div>
+
+        <section className="rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_14px_40px_rgba(148,163,184,0.1)]">
+          <div className="grid grid-cols-3 gap-3 text-center">
+            <div className="rounded-[20px] bg-slate-50 px-3 py-4">
+              <p className="text-[24px] font-black tracking-[-0.05em] text-slate-900">{goals.length}</p>
+              <p className="mt-1 text-[12px] text-slate-500">目标数量</p>
+            </div>
+            <div className="rounded-[20px] bg-slate-50 px-3 py-4">
+              <p className="text-[24px] font-black tracking-[-0.05em] text-slate-900">{entries.length}</p>
+              <p className="mt-1 text-[12px] text-slate-500">记录数量</p>
+            </div>
+            <div className="rounded-[20px] bg-slate-50 px-3 py-4">
+              <p className="text-[24px] font-black tracking-[-0.05em] text-slate-900">{goals.filter((goal) => goal.completionDate).length}</p>
+              <p className="mt-1 text-[12px] text-slate-500">已完成</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_14px_40px_rgba(148,163,184,0.1)]">
+          <h2 className="text-[16px] font-semibold text-slate-900">数据管理</h2>
+          <div className="mt-4 space-y-3">
+            <ActionButton title="导出数据" desc="下载当前目标和记录备份 JSON 文件" onClick={onExport} />
+            <ActionButton title="导入数据" desc="从备份文件恢复你的目标和记录" onClick={onImport} />
+            <ActionButton title="清空全部数据" desc="删除所有目标、记录和本地缓存，不可撤回" onClick={onClearAll} danger />
+          </div>
+          {hasClearedData && (
+            <p className="mt-4 rounded-[18px] bg-amber-50 px-4 py-3 text-[13px] leading-6 text-amber-700">你当前处于空数据状态，刷新页面也不会恢复任何示例数据。</p>
+          )}
+        </section>
+
+        <section className="rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_14px_40px_rgba(148,163,184,0.1)]">
+          <h2 className="text-[16px] font-semibold text-slate-900">使用说明</h2>
+          <div className="mt-4 space-y-3 text-[14px] leading-7 text-slate-500">
+            <p>1. 新建目标后会立即写入本地存储。</p>
+            <p>2. 记录进度、删除记录、编辑目标、删除目标都会立即保存。</p>
+            <p>3. 建议定期导出备份，再进行大规模整理或清空。</p>
+            <p>4. 当前版本使用 localStorage，本地浏览器数据不会自动上传到 GitHub。</p>
+          </div>
+        </section>
+      </div>
+
+      <BottomNav active="profile" onHome={onHome} onStats={onStats} onProfile={() => undefined} />
     </div>
   );
 }
@@ -1290,12 +1681,11 @@ function CompleteScreen({
 }) {
   if (!goal) {
     return (
-      <div className="pb-10 pt-[max(14px,env(safe-area-inset-top))]">
-        <StatusBar />
+      <div className="pb-10 pt-4">
         <div className="space-y-5 px-4">
           <div className="rounded-[34px] bg-[linear-gradient(180deg,_rgba(251,249,255,0.98),_rgba(247,247,249,0.96))] px-5 pb-8 pt-8 text-center shadow-[0_18px_50px_rgba(206,201,220,0.18)]">
             <div className="mx-auto flex h-40 w-40 items-center justify-center rounded-full bg-[radial-gradient(circle_at_50%_35%,_rgba(212,208,255,0.72),_rgba(255,255,255,0.18)_55%,_transparent_70%)] text-[72px]">
-              ○
+              ✦
             </div>
             <h1 className="mt-2 text-[26px] font-black tracking-[-0.04em] text-slate-900">快完成啦</h1>
             <p className="mt-3 text-[16px] leading-8 text-slate-600">当某个目标到达终点时，这里会自动展示完成页和纪念信息。</p>
@@ -1312,17 +1702,14 @@ function CompleteScreen({
     );
   }
 
-  const completionDate = goal.completionDate ? formatFullDate(goal.completionDate) : "尚未完成";
-
   return (
-    <div className="pb-10 pt-[max(14px,env(safe-area-inset-top))]">
-      <StatusBar />
+    <div className="pb-10 pt-4">
       <div className="space-y-5 px-4">
         <div className="rounded-[34px] bg-[linear-gradient(180deg,_rgba(251,249,255,0.98),_rgba(247,247,249,0.96))] px-5 pb-8 pt-8 text-center shadow-[0_18px_50px_rgba(206,201,220,0.18)]">
           <div className="mx-auto flex h-44 w-44 items-center justify-center rounded-full bg-[radial-gradient(circle_at_50%_35%,_rgba(255,232,171,0.82),_rgba(255,255,255,0.20)_55%,_transparent_70%)] text-[88px]">
-            奖
+            🏆
           </div>
-          <h1 className="mt-2 text-[26px] font-black tracking-[-0.04em] text-slate-900">太棒了</h1>
+          <h1 className="mt-2 text-[26px] font-black tracking-[-0.04em] text-slate-900">太棒了！</h1>
           <p className="mt-3 text-[17px] font-semibold leading-8 text-slate-800">
             你已经完成「{goal.title}」
             <br />
@@ -1338,13 +1725,11 @@ function CompleteScreen({
           </div>
           <div className="text-center">
             <p className="text-[13px] text-slate-400">完成日期</p>
-            <p className="mt-2 text-[20px] font-black tracking-[-0.05em] text-slate-900">{completionDate}</p>
+            <p className="mt-2 text-[20px] font-black tracking-[-0.05em] text-slate-900">{goal.completionDate ? formatFullDate(goal.completionDate) : "尚未完成"}</p>
           </div>
         </section>
 
-        <p className="px-6 text-center text-[14px] leading-7 text-slate-500">
-          这不是句号，而是一段积累已经被你真正完成的证据。你可以继续追加记录，或者开启下一个长期目标。
-        </p>
+        <p className="px-6 text-center text-[14px] leading-7 text-slate-500">这不是口号，而是一段真实积累已经发生的证据。你可以继续追加记录，或者开启下一个长期目标。</p>
 
         <div className="space-y-3">
           <button
@@ -1353,10 +1738,7 @@ function CompleteScreen({
           >
             继续追加记录
           </button>
-          <button
-            onClick={onCreate}
-            className="h-14 w-full rounded-[22px] border border-slate-200 bg-white text-[16px] font-semibold text-slate-700"
-          >
+          <button onClick={onCreate} className="h-14 w-full rounded-[22px] border border-slate-200 bg-white text-[16px] font-semibold text-slate-700">
             创建新目标
           </button>
         </div>
@@ -1388,11 +1770,13 @@ function TopBar({
   left,
   right,
   onLeft,
+  onRight,
 }: {
   title: string;
   left: string;
   right: string;
   onLeft?: () => void;
+  onRight?: () => void;
 }) {
   return (
     <div className="flex items-center justify-between px-1 py-1">
@@ -1400,7 +1784,7 @@ function TopBar({
         {left}
       </button>
       <h1 className="max-w-[220px] truncate text-[17px] font-semibold text-slate-900">{title}</h1>
-      <button className="flex h-10 w-10 items-center justify-center rounded-full bg-white/70 text-[22px] text-slate-600">
+      <button onClick={onRight} className="flex h-10 w-10 items-center justify-center rounded-full bg-white/70 text-[22px] text-slate-600">
         {right}
       </button>
     </div>
@@ -1411,16 +1795,15 @@ function BottomNav({
   active,
   onHome,
   onStats,
+  onProfile,
 }: {
-  active: "home" | "stats";
+  active: "home" | "stats" | "profile";
   onHome: () => void;
   onStats: () => void;
+  onProfile: () => void;
 }) {
   const itemClass = (isActive: boolean) =>
-    [
-      "flex min-w-0 flex-1 flex-col items-center gap-1 rounded-2xl py-2 text-[12px] font-medium transition",
-      isActive ? "text-slate-900" : "text-slate-400",
-    ].join(" ");
+    ["flex min-w-0 flex-1 flex-col items-center gap-1 rounded-2xl py-2 text-[12px] font-medium transition", isActive ? "text-slate-900" : "text-slate-400"].join(" ");
 
   return (
     <div className="pointer-events-none fixed bottom-0 left-1/2 z-20 w-full max-w-[430px] -translate-x-1/2 px-4 pb-[max(12px,env(safe-area-inset-bottom))]">
@@ -1434,8 +1817,8 @@ function BottomNav({
             <span className="text-lg">◔</span>
             <span>统计</span>
           </button>
-          <button className={itemClass(false)}>
-            <span className="text-lg">○</span>
+          <button onClick={onProfile} className={itemClass(active === "profile")}>
+            <span className="text-lg">◡</span>
             <span>我的</span>
           </button>
         </div>
@@ -1444,14 +1827,51 @@ function BottomNav({
   );
 }
 
-function StatusBar() {
+function ActionButton({
+  title,
+  desc,
+  onClick,
+  danger,
+}: {
+  title: string;
+  desc: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
   return (
-    <div className="flex items-center justify-between px-7 pb-3 pt-1 text-[15px] font-semibold text-slate-900">
-      <span>9:41</span>
-      <div className="flex items-center gap-1.5 text-[10px]">
-        <span className="block h-2.5 w-4 rounded-sm border border-slate-900" />
-        <span className="block h-2.5 w-3 rounded-sm bg-slate-900" />
-        <span className="block h-2.5 w-5 rounded-[3px] border border-slate-900" />
+    <button
+      onClick={onClick}
+      className={[
+        "w-full rounded-[22px] border px-4 py-4 text-left shadow-[0_10px_24px_rgba(148,163,184,0.06)]",
+        danger ? "border-rose-100 bg-rose-50/80" : "border-slate-100 bg-[linear-gradient(180deg,_rgba(252,252,253,1),_rgba(247,248,250,0.92))]",
+      ].join(" ")}
+    >
+      <p className={`text-[15px] font-semibold ${danger ? "text-rose-600" : "text-slate-900"}`}>{title}</p>
+      <p className="mt-1 text-[13px] leading-6 text-slate-500">{desc}</p>
+    </button>
+  );
+}
+
+function FilterRow<T extends string>({
+  label,
+  options,
+  activeKey,
+  onChange,
+}: {
+  label: string;
+  options: { key: T; label: string }[];
+  activeKey: T;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div>
+      <p className="mb-2 text-[13px] font-semibold text-slate-500">{label}</p>
+      <div className="flex flex-wrap gap-2">
+        {options.map((option) => (
+          <button key={option.key} onClick={() => onChange(option.key)} className={chipClass(activeKey === option.key)}>
+            {option.label}
+          </button>
+        ))}
       </div>
     </div>
   );
